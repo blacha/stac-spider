@@ -1,0 +1,21 @@
+{
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint . --quiet --fix --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "@linzjs/style": "^5.1.0",
+    "@types/node": "^20.9.4"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.456.0",
+    "@chunkd/fs": "^11.2.0",
+    "@chunkd/fs-aws": "^11.2.1",
+    "@cogeotiff/core": "^8.1.1",
+    "p-limit": "^4.0.0",
+    "pino": "^8.16.2",
+    "stac-ts": "^1.0.3",
+    "tsx": "^4.2.0"
+  }
+}
