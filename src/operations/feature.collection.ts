@@ -27,7 +27,6 @@ spider.on('item', async (item: StacItem, url: URL): Promise<void> => {
 
 spider.on('end', async () => {
   output.write('\n]}');
-  console.log('end');
   await new Promise((r) => output.close(r));
 });
 
