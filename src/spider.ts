@@ -49,14 +49,16 @@ export class StacSpider {
     return this.q.push(() => this.processItem(url));
   }
 
-  async processCollection(u: URL): Promise<StacCollection> {
+  async processCollection(u: URL, recursive = true): Promise<StacCollection> {
     logger.debug({ url: u.href, q: this.q.todo.size }, 'fetch:collection');
 
     const collection = await Cache.readJson<StacCollection>(u);
 
-    for (const link of collection.links) {
-      if (link.rel !== 'item') continue;
-      this.processUrl(new URL(link.href, u));
+    if (recursive) {
+      for (const link of collection.links) {
+        if (link.rel !== 'item') continue;
+        this.processUrl(new URL(link.href, u));
+      }
     }
     if (!this.collections.has(u.href)) this.collections.set(u.href, Promise.resolve(collection));
     logger.info({ url: u.href, title: collection.title, q: this.q.todo.size }, 'fetch:collection:done');
@@ -86,8 +88,8 @@ export class StacSpider {
     const collectionPath = new URL('collection.json', itemUrl);
     let collectionFetch = this.collections.get(collectionPath.href);
     if (collectionFetch == null) {
-      collectionFetch = this.processCollection(itemUrl);
-      this.collections.set(itemUrl.href, collectionFetch);
+      collectionFetch = this.processCollection(collectionPath, false);
+      this.collections.set(collectionPath.href, collectionFetch);
     }
     return await collectionFetch;
   }
