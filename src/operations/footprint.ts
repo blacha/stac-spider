@@ -3,15 +3,14 @@
  */
 process.env['POLYGON_CLIPPING_MAX_QUEUE_SIZE'] = String(150_000_000);
 
-import { Projection, Simplify } from '@basemaps/geo';
+import { writeFile } from 'node:fs/promises';
+
+import { Projection } from '@basemaps/geo';
 import { fsa } from '@chunkd/fs';
 import { CogTiff } from '@cogeotiff/core';
-import { MultiPolygon, union } from '@linzjs/geojson';
 import buffer from '@turf/buffer';
 import lineStringToPolygon from '@turf/line-to-polygon';
-import simplify from '@turf/simplify';
-import { writeFile } from 'fs/promises';
-import pc from 'polygon-clipping';
+import * as polyclip from 'polyclip-ts';
 import sharp from 'sharp';
 import { StacItem } from 'stac-ts';
 
@@ -22,7 +21,9 @@ import { ContourMipmap } from '../util/contors.mjs';
 
 const spider = new StacSpider();
 
-const OutputFeatures: GeoJSON.Feature<GeoJSON.Polygon, { name: string }>[] = [];
+type Feature = GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon, { name: string }>;
+const OutputFeatures: Feature[] = [];
+const Unioned: any[] = [];
 
 spider.on('item', async (item: StacItem, url: URL): Promise<void> => {
   const cog = item.assets['visual']; // TODO configurable?
@@ -64,19 +65,19 @@ spider.on('item', async (item: StacItem, url: URL): Promise<void> => {
   }
 
   const mipmap = new ContourMipmap(mask.data, raw.info.width + 2, raw.info.height + 2);
-  const contours = mipmap.contour(1, { smoothCycles: 0 });
+  const contours = mipmap.contour(1, { smoothCycles: 0 }) as [number, number][][];
 
   // Convert pixel coords to real-world
-  const coordinates: number[][][] = contours.map((coords: number[][]) =>
-    coords.map(([x, y]) => {
-      const source = [origin[0] + (x! - 1) * scale, origin[1] - (y! - 1) * scale];
-      return proj.toWgs84(source);
-    }),
-  );
+  // const coordinates: number[][][] = contours.map((coords: number[][]) =>
+  //   coords.map(([x, y]) => {
+  //     const source = [origin[0] + (x! - 1) * scale, origin[1] - (y! - 1) * scale];
+  //     return proj.toWgs84(source);
+  //   }),
+  // );
 
-  const polygons = coordinates.map((co, id) => {
+  const polygons = contours.map((co, id) => {
     // const before = co.length;
-    // const points = Simplify.points(co as any, 0.000001);
+    // const points = Simplify.points(co, 1);
     // console.log({ before, after: points.length });
     const poly = lineStringToPolygon({
       type: 'Feature',
@@ -86,42 +87,52 @@ spider.on('item', async (item: StacItem, url: URL): Promise<void> => {
     return poly;
   }) as GeoJSON.Feature<GeoJSON.Polygon>[];
 
+  const xord = polyclip.xor(...polygons.map((m) => m.geometry.coordinates)) as [number, number][][][];
+
+  // console.log(polygons.map((m) => m.geometry.coordinates));
+
   if (polygons.length === 1) {
-    OutputFeatures.push(polygons[0] as any);
+    const polyZero = polygons[0] as Feature;
+    OutputFeatures.push(polyZero);
+    polyZero.geometry.coordinates = polyZero.geometry.coordinates.map((ring) => {
+      return ring.map((p: any) => {
+        const pxToWorld = [origin[0] + (p[0]! - 1) * scale, origin[1] - (p[1]! - 1) * scale];
+        return proj.toWgs84(pxToWorld);
+      });
+    }) as unknown as GeoJSON.Position[][][];
+
     logger.debug({ url: cog.href }, 'tiff:done');
+    // Unioned = polyclip.union(Unioned, polyZero.geometry.coordinates);
+
     // console.timeEnd(cog.href);
     return;
   }
 
-  const xord = pc.xor(...polygons.map((m) => m.geometry.coordinates));
-
   // console.log(xord);
-  const feat =
-    //simplify(
-    // buffer(
-    {
-      type: 'Feature',
-      geometry: {
-        type: 'MultiPolygon',
-        coordinates: xord,
-      },
-      properties: { name: cog.href },
-    };
-  // 0.001,
-  // ),
-  //   { tolerance: 0.01, highQuality: false },
-  // );
 
-  // console.log(Simplify.multiPolygon(feat.geometry.coordinates, 0.001));
-  // feat.geometry.coordinates = Simplify.multiPolygon(feat.geometry.coordinates, 0.001) as any;
-  // console.log(ret);
-  OutputFeatures.push(feat as any);
+  // const projWgs84 = Projection.get();
+  const coordinates = xord.map((poly) => {
+    return poly.map((ring) =>
+      ring.map((p) => {
+        const pxToWorld = [origin[0] + (p[0] - 1) * scale, origin[1] - (p[1] - 1) * scale];
+        return proj.toWgs84(pxToWorld);
+      }),
+    );
+  }) as unknown as GeoJSON.Position[][][];
 
-  // console.log(contours);
+  const feat: Feature = {
+    type: 'Feature',
+    geometry: {
+      type: 'MultiPolygon',
+      coordinates,
+    },
+    properties: { name: cog.href },
+  };
+
+  OutputFeatures.push(feat);
+  // Unioned = polyclip.union(Unioned, feat.geometry.coordinates);
+
   console.timeEnd(cog.href);
-
-  // throw new Error('No COG');
-  //   console.log(tiff);
 });
 
 spider.on('end', async () => {
@@ -130,50 +141,45 @@ spider.on('end', async () => {
 
   OutputFeatures.sort((a, b) => a.properties['name'].localeCompare(b.properties['name']));
 
-  let u = [];
-  const batchSize = 250;
-  for (let i = 0; i < OutputFeatures.length; i += batchSize) {
-    u = union(
-      u,
-      ...OutputFeatures.slice(i, i + batchSize).map((m) => {
-        // console.log(JSON.stringify(m));
-        return m.geometry.coordinates;
-      }),
-    );
-    console.log(
-      u.length,
-      u.map((m) => m.length),
-      // u.map((m) => m.properties.name),
-      OutputFeatures[i]?.properties.name,
-    );
-  }
-  // const unioned = union([], ...OutputFeatures.map((m) => m.geometry.coordinates));
-  const buffered = buffer({ type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: u } }, 0.002);
-  // const ret = Simplify.multiPolygon(buffered as any, 0.0001);
-  // console.log(ret);
+  //   let u = [];
+  //   const batchSize = 250;
+  //   for (let i = 0; i < OutputFeatures.length; i += batchSize) {
+  //     u = union(
+  //       u,
+  //       ...OutputFeatures.slice(i, i + batchSize).map((m) => {
+  //         // console.log(JSON.stringify(m));
+  //         return m.geometry.coordinates;
+  //       }),
+  //     );
+  //     console.log(
+  //       u.length,
+  //       u.map((m) => m.length),
+  //       // u.map((m) => m.properties.name),
+  //       OutputFeatures[i]?.properties.name,
+  //     );
+  //   }
+  const unioned = polyclip.union(...OutputFeatures.map((m) => m.geometry.coordinates));
+  const buffered = buffer({ type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: unioned } }, 0.002);
+  //   // const ret = Simplify.multiPolygon(buffered as any, 0.0001);
+  //   // console.log(ret);
 
-  console.log(buffered);
+  //   console.log(buffered);
   await writeFile(
     './merged.geojson',
     JSON.stringify({
       type: 'Feature',
-      geometry: buffered.geometry,
+      geometry: { type: 'MultiPolygon', coordinates: unioned },
       properties: {},
     }),
   );
 
   await writeFile(
     './simple.geojson',
-    JSON.stringify(
-      simplify(
-        {
-          type: 'Feature',
-          geometry: buffered.geometry,
-          properties: {},
-        },
-        { tolerance: 0.0001 },
-      ),
-    ),
+    JSON.stringify({
+      type: 'Feature',
+      geometry: buffered.geometry,
+      properties: {},
+    }),
   );
 });
 

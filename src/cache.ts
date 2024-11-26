@@ -17,16 +17,17 @@ export const Cache = {
       '.' +
       loc.pathname.slice(1).replaceAll('/', '__');
     try {
-      return JSON.parse(await readFile(cacheKey, 'utf-8'));
+      const read = JSON.parse(await readFile(cacheKey, 'utf-8'));
+      logger.trace({ cacheKey, loc: loc.href }, 'cache:hit');
+      return read;
     } catch (e) {
       if (Cache.isFirstRequest) await mkdir('./cache', { recursive: true });
       Cache.isFirstRequest = false;
 
-      logger.trace({ url: loc.href }, 'cache:miss');
+      logger.error({ url: loc.href }, 'cache:miss');
       const ret = await fsa.read(loc);
       const data = Buffer.from(ret);
 
-      console.log('write');
       await writeFile(cacheKey, data);
       return JSON.parse(data.toString()) as T;
     }
@@ -54,8 +55,9 @@ export const Cache = {
     } catch (e) {
       if (Cache.isFirstRequest) await mkdir('./cache', { recursive: true });
       Cache.isFirstRequest = false;
-      logger.trace({ url: req.source.url, offset: req.offset, length: req.length }, 'cache:miss');
+      logger.debug({ url: req.source.url, offset: req.offset, length: req.length }, 'cache:miss');
 
+      // log
       const data = await next(req);
 
       await writeFile(reqId, Buffer.from(data));

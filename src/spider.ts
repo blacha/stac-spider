@@ -2,21 +2,23 @@ import './cn.fs.js';
 
 import { StacCatalog, StacCollection, StacItem } from 'stac-ts';
 
+import { main } from './bin.js';
 import { Cache } from './cache.js';
 import { logger } from './log.js';
 import { ConcurrentQueue } from './queue.js';
 
 export interface StacEvents {
-  catalog: StacCatalog;
-  item: StacItem;
-  collection: StacCollection;
-  end: undefined;
+  catalog: [StacCatalog, URL];
+  item: [StacItem, URL];
+  collection: [StacCollection, URL];
+  end: [];
 }
 
 export class StacSpider {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  events: { key: string; cb: (val: any, url: URL) => Promise<unknown> }[] = [];
+  events: { key: string; cb: (...args: any) => Promise<unknown> }[] = [];
   seen = new Set<string>();
+  stats = { collections: 0, catalogs: 0, items: 0 };
   collections = new Map<string, Promise<StacCollection>>();
   q: ConcurrentQueue;
   maxQueueSize: number;
@@ -26,17 +28,21 @@ export class StacSpider {
     this.maxQueueSize = maxQueueSize;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.q.onEmpty(() => this.emit('end', undefined, undefined as any));
+    this.q.onEmpty(() => this.emit('end'));
   }
 
-  on<T extends keyof StacEvents>(key: T, cb: (v: StacEvents[T], url: URL) => Promise<unknown>): void {
+  on<T extends keyof StacEvents>(key: T, cb: (...args: StacEvents[T]) => Promise<unknown>): void {
     this.events.push({ key, cb });
   }
 
-  async emit<T extends keyof StacEvents>(key: T, value: StacEvents[T], url: URL): Promise<void> {
+  async emit<T extends keyof StacEvents>(key: T, ...args: StacEvents[T]): Promise<boolean> {
+    let ret = true;
     for (const evt of this.events) {
-      if (evt.key === key) await evt.cb(value, url);
+      if (evt.key === key) {
+        if ((await evt.cb(...args)) === false) ret = false;
+      }
     }
+    return ret;
   }
 
   async processUrl(url: URL): Promise<unknown> {
@@ -53,6 +59,18 @@ export class StacSpider {
     logger.debug({ url: u.href, q: this.q.todo.size }, 'fetch:collection');
 
     const collection = await Cache.readJson<StacCollection>(u);
+    if (!this.collections.has(u.href)) {
+      this.collections.set(u.href, Promise.resolve(collection));
+      this.stats.collections++;
+    }
+
+    logger.info({ url: u.href, title: collection.title, q: this.q.todo.size }, 'fetch:collection:done');
+
+    const isAbort = await this.emit('collection', collection, u);
+    if (isAbort === false) {
+      await this.join();
+      return collection;
+    }
 
     if (recursive) {
       for (const link of collection.links) {
@@ -60,10 +78,6 @@ export class StacSpider {
         this.processUrl(new URL(link.href, u));
       }
     }
-    if (!this.collections.has(u.href)) this.collections.set(u.href, Promise.resolve(collection));
-    logger.info({ url: u.href, title: collection.title, q: this.q.todo.size }, 'fetch:collection:done');
-
-    await this.emit('collection', collection, u);
 
     await this.join();
     return collection;
@@ -71,6 +85,7 @@ export class StacSpider {
 
   async processCatalog(u: URL): Promise<StacCatalog> {
     logger.debug({ url: u.href }, 'fetch:catalog');
+    this.stats.catalogs++;
 
     const catalog = await Cache.readJson<StacCatalog>(u);
 
@@ -96,6 +111,7 @@ export class StacSpider {
 
   async processItem(u: URL): Promise<StacItem> {
     logger.trace({ url: u.href, q: this.q.todo.size }, 'fetch:item');
+    this.stats.items++;
 
     // Ensure the collection is loaded first
     await this.getCollection(undefined, u);
@@ -109,5 +125,9 @@ export class StacSpider {
 
   async join(): Promise<void> {
     if (this.q.todo.size > this.maxQueueSize) await this.q.join();
+  }
+
+  start(): void {
+    main(this);
   }
 }
