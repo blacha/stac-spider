@@ -11,6 +11,7 @@ export interface StacEvents {
   catalog: [StacCatalog, URL];
   item: [StacItem, URL];
   collection: [StacCollection, URL];
+  empty: [];
   end: [];
 }
 
@@ -28,7 +29,11 @@ export class StacSpider {
     this.maxQueueSize = maxQueueSize;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.q.onEmpty(() => this.emit('end'));
+    this.q.onEmpty(() => this.emit('empty'));
+  }
+
+  async end(): Promise<void> {
+    await this.emit('end');
   }
 
   on<T extends keyof StacEvents>(key: T, cb: (...args: StacEvents[T]) => Promise<unknown>): void {
@@ -45,8 +50,8 @@ export class StacSpider {
     return ret;
   }
 
-  async processUrl(url: URL): Promise<unknown> {
-    if (this.seen.has(url.href)) return;
+  async processUrl(url: URL): Promise<{ id: string } | null> {
+    if (this.seen.has(url.href)) return null;
     this.seen.add(url.href);
     await this.join();
 
@@ -88,14 +93,18 @@ export class StacSpider {
     this.stats.catalogs++;
 
     const catalog = await Cache.readJson<StacCatalog>(u);
+    logger.info({ url: u.href, title: catalog.title, q: this.q.todo.size }, 'fetch:catalog:done');
+    const isAbort = await this.emit('catalog', catalog, u);
+    if (isAbort === false) {
+      await this.join();
+      return catalog;
+    }
 
     for (const link of catalog.links) {
       if (link.rel !== 'child') continue;
       this.processUrl(new URL(link.href, u));
     }
 
-    logger.info({ url: u.href, title: catalog.title, q: this.q.todo.size }, 'fetch:catalog:done');
-    await this.emit('catalog', catalog, u);
     return catalog;
   }
 
@@ -127,7 +136,7 @@ export class StacSpider {
     if (this.q.todo.size > this.maxQueueSize) await this.q.join();
   }
 
-  start(): void {
-    main(this);
+  async start(): Promise<void> {
+    await main(this);
   }
 }

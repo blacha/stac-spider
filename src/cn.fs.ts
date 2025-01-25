@@ -1,5 +1,5 @@
 import { S3Client } from '@aws-sdk/client-s3';
-import { fsa } from '@chunkd/fs';
+import { fsa, FsHttp } from '@chunkd/fs';
 import { FsAwsS3 } from '@chunkd/fs-aws';
 import * as mw from '@chunkd/middleware';
 import type { HttpRequest } from '@smithy/types';
@@ -7,6 +7,8 @@ import type { HttpRequest } from '@smithy/types';
 import { Cache } from './cache.js';
 
 fsa.register('s3://', new FsAwsS3(new S3Client()));
+fsa.register('https://', new FsHttp());
+
 // Public bucket :tada:
 fsa.register(
   's3://nz-imagery',

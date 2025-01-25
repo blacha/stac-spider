@@ -4,18 +4,14 @@ import { mkdir, readFile, writeFile } from 'fs/promises';
 
 import { logger } from './log.js';
 
+export const FetchError = 'StacSpider__FetchError__';
+
 export const Cache = {
   name: 'cache',
   isFirstRequest: true,
   // Cache all requests to load JSON
   async readJson<T>(loc: URL): Promise<T> {
-    const cacheKey =
-      './cache/' +
-      loc.protocol.replace(':', '') +
-      '.' +
-      loc.hostname +
-      '.' +
-      loc.pathname.slice(1).replaceAll('/', '__');
+    const cacheKey = './cache/' + loc.protocol.replace(':', '') + '/' + loc.hostname + '/' + loc.pathname.slice(1);
     try {
       const read = JSON.parse(await readFile(cacheKey, 'utf-8'));
       logger.trace({ cacheKey, loc: loc.href }, 'cache:hit');
@@ -24,12 +20,34 @@ export const Cache = {
       if (Cache.isFirstRequest) await mkdir('./cache', { recursive: true });
       Cache.isFirstRequest = false;
 
-      logger.error({ url: loc.href }, 'cache:miss');
-      const ret = await fsa.read(loc);
-      const data = Buffer.from(ret);
+      logger.trace({ url: loc.href }, 'cache:miss');
+      let err: Error | null = null;
+      const ret = await fsa.read(loc).catch((e) => {
+        logger.error({ u: loc.href, err: String(e) }, 'fetch:failed');
+        err = e;
+      });
+      if (ret == null) {
+        await fsa.write(
+          fsa.toUrl(cacheKey),
+          JSON.stringify(
+            { id: FetchError, error: String(err), $source: loc.href, $fetchedAt: new Date().toISOString() } as T,
+            null,
+            2,
+          ),
+        );
 
-      await writeFile(cacheKey, data);
-      return JSON.parse(data.toString()) as T;
+        return { id: FetchError } as T;
+      }
+      try {
+        const data = Buffer.from(ret);
+        const item = JSON.parse(data.toString()) as T & { $source: string };
+        item.$source = loc.href;
+        await fsa.write(fsa.toUrl(cacheKey), JSON.stringify(item, null, 2));
+        return item;
+      } catch (e) {
+        logger.error({ u: loc.href, err: String(e) }, 'fetch:failed');
+        return { id: FetchError } as T;
+      }
     }
   },
 
