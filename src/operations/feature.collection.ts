@@ -1,6 +1,4 @@
-import { toFeatureMultiPolygon } from '@linzjs/geojson';
-import { createWriteStream, writeFileSync, WriteStream } from 'fs';
-import * as pc from 'polyclip-ts';
+import { createWriteStream, WriteStream } from 'fs';
 import { StacCollection, StacItem } from 'stac-ts';
 
 import { main } from '../bin.js';
@@ -45,7 +43,7 @@ spider.on('item', async (item: StacItem, url: URL): Promise<void> => {
 spider.on('end', async () => {
   console.log('END');
   //  console.log(pc.union(polygons));
-  for (const [key, output] of files) {
+  for (const [_, output] of files) {
     await new Promise((r) => output.close(r));
     //writeFileSync(`./output-features/polygon-${key}.geojson`, JSON.stringify(toFeatureMultiPolygon(pc.union(polygons))));
   }

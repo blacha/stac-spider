@@ -21,7 +21,7 @@ export const Cache = {
       Cache.isFirstRequest = false;
 
       logger.trace({ url: loc.href }, 'cache:miss');
-      let err: Error | null = null;
+      let err: (Error & { code: number }) | null = null;
       const ret = await fsa.read(loc).catch((e) => {
         logger.error({ u: loc.href, err: String(e) }, 'fetch:failed');
         err = e;
@@ -30,7 +30,13 @@ export const Cache = {
         await fsa.write(
           fsa.toUrl(cacheKey),
           JSON.stringify(
-            { id: FetchError, error: String(err), $source: loc.href, $fetchedAt: new Date().toISOString() } as T,
+            {
+              id: FetchError,
+              $error: String(err),
+              $code: err?.['code'],
+              $source: loc.href,
+              $fetchedAt: new Date().toISOString(),
+            } as T,
             null,
             2,
           ),
